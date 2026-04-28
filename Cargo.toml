@@ -1,0 +1,19 @@
+[package]
+name = "fe2o3-orbit"
+version = "0.1.0"
+edition = "2021"
+authors = ["Geir Isene <g@isene.com>"]
+description = "Moon phases, ephemeris, sun/planet positions. Shared by Fe₂O₃ apps (nova, tock). Ported from ruby-ephemeris."
+license = "Unlicense"
+repository = "https://github.com/isene/orbit"
+keywords = ["astronomy", "ephemeris", "moon", "planets", "fe2o3"]
+categories = ["science", "command-line-utilities"]
+
+[lib]
+name = "orbit"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
