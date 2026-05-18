@@ -253,15 +253,34 @@ impl Ephemeris {
         let dec_val = zequat.atan2((xequat * xequat + yequat * yequat).sqrt()) * 180.0 / PI;
         let dist = (xequat * xequat + yequat * yequat + zequat * zequat).sqrt();
 
-        // Topocentric correction
+        // Topocentric correction (parallax shift from geocentric to
+        // observer-on-surface). Significant for the moon (~1°),
+        // tiny for everything else. The earlier form used an
+        // auxiliary angle `g = atan(tan(gclat) / cos(ha))` and
+        // divided the dec correction by sin(g) — which goes NaN at
+        // gclat = 0 (observer on the equator) and at hour angles
+        // where cos(ha) flips sign. Replaced with the direct trig
+        // (Meeus AA 40.6) that has no removable singularity.
+        //
+        // Note: positions stay in equator-of-date — Schlyter's
+        // linear w/n element terms already account for the secular
+        // precession of the orbits, so an explicit J2000→date
+        // rotation here would double-count by ~50"/year.
         let par = if name == "moon" { (1.0 / r_b).asin() * 180.0 / PI } else { (8.794 / 3600.0) / r_b };
         let gclat = self.lat - 0.1924 * deg(2.0 * self.lat).sin();
         let rho = 0.99833 + 0.00167 * deg(2.0 * self.lat).cos();
         let lst = self.sidtime * 15.0;
         let ha = (lst - ra + 360.0) % 360.0;
-        let g = (deg(gclat).tan() / deg(ha).cos()).atan() * 180.0 / PI;
-        let top_ra = ra - par * rho * deg(gclat).cos() * deg(ha).sin() / deg(dec_val).cos();
-        let top_dec = dec_val - par * rho * deg(gclat).sin() * deg(g - dec_val).sin() / deg(g).sin();
+        let cos_dec = deg(dec_val).cos();
+        let top_ra = if cos_dec.abs() < 1e-9 {
+            ra
+        } else {
+            ra - par * rho * deg(gclat).cos() * deg(ha).sin() / cos_dec
+        };
+        let top_dec = dec_val - par * rho * (
+            deg(gclat).sin() * cos_dec
+            - deg(gclat).cos() * deg(ha).cos() * deg(dec_val).sin()
+        );
 
         (top_ra, top_dec, dist, ra, dec_val)
     }
@@ -284,10 +303,29 @@ impl Ephemeris {
         self.alt_az(ra, dec, hour)
     }
 
-    fn rts(&self, ra: f64, dec: f64) -> (String, String, String) {
+    /// Rise / transit / set times for a body at (ra, dec). `h0` is the
+    /// true altitude at which the rise/set event is defined — set
+    /// it to:
+    ///   -0.833° for the sun (upper-limb + 34' refraction + 16' radius)
+    ///   +0.125° for the moon (parallax - refraction - radius)
+    ///   -0.5667° for stars / planets (just standard refraction)
+    /// or 0° for the geometric horizon.
+    ///
+    /// Earlier this function ignored `h0` entirely (assumed 0°). At
+    /// Oslo's 60° latitude on the summer solstice that omission cost
+    /// ~12 minutes per end on sun rise/set — half the half-day-length
+    /// inflation that h0 = -0.833° gives via Meeus 15.1.
+    fn rts(&self, ra: f64, dec: f64, h0: f64) -> (String, String, String) {
         let transit = (ra - self.ls - self.lon) / 15.0 + 12.0 + self.tz;
         let transit = (transit + 24.0) % 24.0;
-        let cos_lha = -(deg(self.lat).tan() * deg(dec).tan());
+        let sin_h0 = deg(h0).sin();
+        let phi = deg(self.lat);
+        let delta = deg(dec);
+        let denom = phi.cos() * delta.cos();
+        if denom.abs() < 1e-12 {
+            return ("never".into(), format_hhmm(transit), "always".into());
+        }
+        let cos_lha = (sin_h0 - phi.sin() * delta.sin()) / denom;
         if cos_lha < -1.0 {
             return ("always".into(), format_hhmm(transit), "never".into());
         }
@@ -298,6 +336,17 @@ impl Ephemeris {
         let rise = (transit - lha_h + 24.0) % 24.0;
         let set = (transit + lha_h + 24.0) % 24.0;
         (format_hhmm(rise), format_hhmm(transit), format_hhmm(set))
+    }
+}
+
+/// Standard rise/set altitudes for each body, in degrees. The sun and
+/// moon get special-case offsets; everything else uses the generic
+/// "stars and planets" refraction-only floor.
+fn rise_altitude(body: &str) -> f64 {
+    match body {
+        "sun"  => -0.8333,
+        "moon" =>  0.125,
+        _      => -0.5667,
     }
 }
 
@@ -395,7 +444,7 @@ pub fn astro_events_for_year(year: i32, month: u32, day: u32) -> Vec<String> {
 
 pub fn sun_times(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) -> Option<(String, String)> {
     let eph = Ephemeris::new(year, month, day, lat, lon, tz);
-    let (rise, _, set) = eph.rts(eph.sun_ra, eph.sun_dec);
+    let (rise, _, set) = eph.rts(eph.sun_ra, eph.sun_dec, rise_altitude("sun"));
     if rise == "never" || rise == "always" { return None; }
     Some((truncate_hms(&rise), truncate_hms(&set)))
 }
@@ -408,7 +457,7 @@ pub fn sun_times_oslo(year: i32, month: u32, day: u32) -> Option<(String, String
 pub fn moon_times(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) -> Option<(String, String)> {
     let eph = Ephemeris::new(year, month, day, lat, lon, tz);
     let (ra, dec, _, _, _) = eph.body_calc("moon");
-    let (rise, _, set) = eph.rts(ra, dec);
+    let (rise, _, set) = eph.rts(ra, dec, rise_altitude("moon"));
     if rise == "never" || rise == "always" { return None; }
     Some((truncate_hms(&rise), truncate_hms(&set)))
 }
@@ -425,10 +474,21 @@ pub const BODY_ORDER: &[&str] = &[
 ];
 
 pub fn body_symbol(name: &str) -> &'static str {
+    // VS-15 (`U+FE0E`) appended so emoji-presentation terminals
+    // keep these as monochrome text glyphs, matching the size /
+    // weight of the surrounding text rather than scaling them up
+    // into 2-cell colour icons. Same rationale as
+    // `visible_planets` — see the comment there.
     match name {
-        "sun" => "\u{2600}", "moon" => "\u{263E}", "mercury" => "\u{263F}",
-        "venus" => "\u{2640}", "mars" => "\u{2642}", "jupiter" => "\u{2643}",
-        "saturn" => "\u{2644}", "uranus" => "\u{2645}", "neptune" => "\u{2646}",
+        "sun"     => "\u{2600}\u{FE0E}",
+        "moon"    => "\u{263E}\u{FE0E}",
+        "mercury" => "\u{263F}\u{FE0E}",
+        "venus"   => "\u{2640}\u{FE0E}",
+        "mars"    => "\u{2642}\u{FE0E}",
+        "jupiter" => "\u{2643}\u{FE0E}",
+        "saturn"  => "\u{2644}\u{FE0E}",
+        "uranus"  => "\u{2645}\u{FE0E}",
+        "neptune" => "\u{2646}\u{FE0E}",
         _ => "?",
     }
 }
@@ -489,7 +549,7 @@ pub fn all_bodies(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) 
     let mut out = Vec::with_capacity(BODY_ORDER.len());
     for &name in BODY_ORDER {
         let (ra, dec, dist, _, _) = eph.body_calc(name);
-        let (rise, transit, set) = eph.rts(ra, dec);
+        let (rise, transit, set) = eph.rts(ra, dec, rise_altitude(name));
         let always_up = rise == "always";
         let never_up = rise == "never";
         let rise_h = if always_up || never_up { None } else { parse_hhmm(&rise) };
@@ -626,12 +686,18 @@ pub fn hex_to_256(hex: &str) -> u8 {
 pub fn visible_planets(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) -> Vec<VisiblePlanet> {
     let eph = Ephemeris::new(year, month, day, lat, lon, tz);
 
+    // Variation selector 15 (U+FE0E) forces emoji-presentation
+    // terminals to render the astronomical/astrological symbols as
+    // text-style monochrome glyphs rather than 2-cell colour icons.
+    // Without it, kitty / wezterm / Konsole blow `☿♀♂♃♄` up to emoji
+    // size next to small-pt time strings; with it, they sit cleanly
+    // inline with the rest of the row.
     let planet_info: &[(&str, &str, &str)] = &[
-        ("mercury", "\u{263F}", "8F6E54"),
-        ("venus",   "\u{2640}", "E6B07C"),
-        ("mars",    "\u{2642}", "BC2732"),
-        ("jupiter", "\u{2643}", "C08040"),
-        ("saturn",  "\u{2644}", "E8D9A0"),
+        ("mercury", "\u{263F}\u{FE0E}", "8F6E54"),
+        ("venus",   "\u{2640}\u{FE0E}", "E6B07C"),
+        ("mars",    "\u{2642}\u{FE0E}", "BC2732"),
+        ("jupiter", "\u{2643}\u{FE0E}", "C08040"),
+        ("saturn",  "\u{2644}\u{FE0E}", "E8D9A0"),
     ];
 
     let check_hours = [20.0, 21.0, 22.0, 23.0, 0.0, 1.0, 2.0, 3.0, 4.0];
@@ -644,7 +710,7 @@ pub fn visible_planets(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: 
         });
         if is_visible {
             let (ra, dec, _, _, _) = eph.body_calc(name);
-            let (rise, _, set) = eph.rts(ra, dec);
+            let (rise, _, set) = eph.rts(ra, dec, rise_altitude(name));
             visible.push(VisiblePlanet {
                 name: match name {
                     "mercury" => "Mercury", "venus" => "Venus", "mars" => "Mars",
@@ -783,29 +849,13 @@ fn truncate_hms(s: &str) -> String {
 mod tests {
     use super::*;
 
+    // ── Sanity tests ──────────────────────────────────────────────
+
     #[test]
     fn test_moon_phase_range() {
         let p = moon_phase(2026, 4, 7);
         assert!(p.illumination >= 0.0 && p.illumination <= 1.0);
         assert!(p.phase_index < 8);
-    }
-
-    #[test]
-    fn test_sun_times_oslo_summer() {
-        if let Some((rise, set)) = sun_times_oslo(2026, 6, 21) {
-            let rh: u32 = rise[..2].parse().unwrap();
-            let sh: u32 = set[..2].parse().unwrap();
-            assert!(rh < 6, "Summer sunrise before 06, got {}", rise);
-            assert!(sh > 20, "Summer sunset after 20, got {}", set);
-        }
-    }
-
-    #[test]
-    fn test_visible_planets_returns_results() {
-        let v = visible_planets(2026, 4, 7, 59.9139, 10.7522, 1.0);
-        // Should find at least some visible planets (not a guarantee, but likely)
-        // This is a smoke test, not a strict assertion
-        assert!(v.len() <= 5);
     }
 
     #[test]
@@ -815,6 +865,213 @@ mod tests {
             let (ra, dec, _, _, _) = eph.body_calc(name);
             assert!(ra >= 0.0 && ra < 360.0, "{} RA out of range: {}", name, ra);
             assert!(dec >= -90.0 && dec <= 90.0, "{} Dec out of range: {}", name, dec);
+        }
+    }
+
+    // ── Robustness regressions ────────────────────────────────────
+
+    /// Previously body_calc divided the topocentric Dec correction
+    /// by sin(g) where g = atan(tan(gclat)/cos(ha)) — which went NaN
+    /// for an observer on the equator (gclat = 0) and at hour angles
+    /// where cos(ha) flips sign. Guard against the regression.
+    #[test]
+    fn topocentric_dec_is_finite_at_equator() {
+        let bodies = all_bodies(2025, 1, 1, 0.0, 0.0, 0.0);
+        for b in &bodies {
+            assert!(b.ra_deg.is_finite(),  "{} RA non-finite at lat=0",  b.name);
+            assert!(b.dec_deg.is_finite(), "{} Dec non-finite at lat=0", b.name);
+        }
+    }
+
+    #[test]
+    fn topocentric_dec_is_finite_at_poles() {
+        let bodies = all_bodies(2025, 1, 1, 89.9, 0.0, 0.0);
+        for b in &bodies {
+            assert!(b.ra_deg.is_finite(),  "{} RA non-finite at high lat",  b.name);
+            assert!(b.dec_deg.is_finite(), "{} Dec non-finite at high lat", b.name);
+        }
+        let bodies = all_bodies(2025, 1, 1, -89.9, 0.0, 0.0);
+        for b in &bodies {
+            assert!(b.ra_deg.is_finite(),  "{} RA non-finite at low lat",  b.name);
+            assert!(b.dec_deg.is_finite(), "{} Dec non-finite at low lat", b.name);
+        }
+    }
+
+    // ── Accuracy floor against Skyfield (JPL DE421) ──────────────
+    // Truth values from skyfield 1.54 with `apparent().radec(epoch='date')`
+    // — i.e. mean equator/equinox of date, geocentric, with light-time
+    // and aberration. That's the frame Schlyter's element model
+    // approximates, so it's the right benchmark.
+    //
+    // Tolerances chosen at ~2x the worst observed error per body across
+    // 2025-2030 so the test catches a real degradation, not random
+    // perturbation-term drift.
+
+    fn angle_diff_deg(a: f64, b: f64) -> f64 {
+        let mut d = (a - b).abs();
+        if d > 180.0 { d = 360.0 - d; }
+        d
+    }
+
+    /// (year, month, day, body, ra_truth_deg, dec_truth_deg)
+    const TRUTH: &[(i32, u32, u32, &str, f64, f64)] = &[
+        (2025, 1, 1, "sun",     281.7601, -22.9982),
+        (2025, 1, 1, "moon",    296.6803, -25.8605),
+        (2025, 1, 1, "mercury", 259.0716, -21.9414),
+        (2025, 1, 1, "venus",   330.3948, -13.5864),
+        (2025, 1, 1, "mars",    125.1258,  23.5452),
+        (2025, 1, 1, "jupiter",  71.8822,  21.7874),
+        (2025, 1, 1, "saturn",  346.5164,  -7.9168),
+        (2025, 1, 1, "uranus",   51.3188,  18.4365),
+        (2025, 1, 1, "neptune", 358.0317,  -2.2540),
+
+        (2026, 1, 1, "sun",     281.4947, -23.0172),
+        (2026, 1, 1, "moon",     63.9203,  26.4037),
+        (2026, 1, 1, "mercury", 268.5241, -24.0013),
+        (2026, 1, 1, "venus",   280.0565, -23.6224),
+        (2026, 1, 1, "mars",    283.8796, -23.7200),
+        (2026, 1, 1, "jupiter", 113.1243,  21.9791),
+        (2026, 1, 1, "saturn",  357.3810,  -3.5964),
+
+        (2026, 6, 21, "sun",     89.6355,  23.4375),
+        (2026, 6, 21, "mars",    52.1363,  18.4654),
+        (2026, 6, 21, "jupiter",120.2369,  20.9711),
+
+        (2030, 1, 1, "sun",     281.5310, -23.0117),
+        (2030, 1, 1, "mercury", 280.0892, -20.4593),
+        (2030, 1, 1, "venus",   290.6761, -18.8869),
+        (2030, 1, 1, "mars",    317.5219, -17.5346),
+        (2030, 1, 1, "jupiter", 228.4149, -16.9267),
+    ];
+
+    /// Per-body tolerance in arcminutes for both RA and Dec.
+    /// These reflect the algorithm's actual accuracy floor, not an
+    /// aspirational target — see CLAUDE.md / README.
+    fn tolerance_arcmin(body: &str) -> f64 {
+        match body {
+            "sun"     => 2.0,
+            "moon"    => 65.0,   // ~1° — Schlyter's truncation, see docs
+            "mercury" => 3.0,
+            "venus"   => 2.0,
+            "mars"    => 3.0,
+            "jupiter" => 3.0,
+            "saturn"  => 10.0,   // perturbation series weakest here
+            "uranus"  => 2.0,
+            "neptune" => 2.0,
+            _         => 60.0,
+        }
+    }
+
+    #[test]
+    fn ra_dec_within_tolerance_against_skyfield() {
+        // Pure geocentric vantage (lat/lon = 0, tz = 0) so the truth
+        // generator's `obs = earth.at(t)` and our orbit lookup are in
+        // the same observer frame (topocentric parallax negligible for
+        // everything but the moon, which has its own large tolerance).
+        let lat = 0.0; let lon = 0.0; let tz = 0.0;
+        for &(y, m, d, body, ra_t, dec_t) in TRUTH {
+            let bodies = all_bodies(y, m, d, lat, lon, tz);
+            let b = bodies.iter().find(|x| x.name == body)
+                .unwrap_or_else(|| panic!("body {} not produced by all_bodies", body));
+            let dra_min = angle_diff_deg(b.ra_deg, ra_t) * 60.0;
+            let ddec_min = (b.dec_deg - dec_t).abs() * 60.0;
+            let tol = tolerance_arcmin(body);
+            assert!(dra_min <= tol,
+                "{} {}-{:02}-{:02} RA: {} vs truth {} (Δ={:.2}' > {:.1}' tolerance)",
+                body, y, m, d, b.ra_deg, ra_t, dra_min, tol);
+            assert!(ddec_min <= tol,
+                "{} {}-{:02}-{:02} Dec: {} vs truth {} (Δ={:.2}' > {:.1}' tolerance)",
+                body, y, m, d, b.dec_deg, dec_t, ddec_min, tol);
+        }
+    }
+
+    // ── Sun rise / set against Oslo almanac data ──────────────────
+
+    /// Convert "HH:MM" to minutes-since-midnight. Panics on bad input —
+    /// the caller's test will report the panic location.
+    fn to_min(s: &str) -> i32 {
+        let h: i32 = s[..2].parse().unwrap();
+        let m: i32 = s[3..5].parse().unwrap();
+        h * 60 + m
+    }
+
+    fn assert_time_close(actual: &str, expected_minutes: i32, tol_min: i32, ctx: &str) {
+        let a = to_min(actual);
+        let mut diff = (a - expected_minutes).abs();
+        if diff > 720 { diff = 1440 - diff; } // wrap around midnight
+        assert!(diff <= tol_min,
+            "{}: expected {:02}:{:02}, got {} (Δ={} min, tol {})",
+            ctx, expected_minutes / 60, expected_minutes % 60, actual, diff, tol_min);
+    }
+
+    /// Oslo, lat 59.9139°N lon 10.7522°E. Reference times from
+    /// Skyfield (UTC), then shifted by the named tz offset.
+    /// Tolerance: 3 minutes, which is well within Schlyter-class
+    /// accuracy for sun rise/set at Norwegian latitudes.
+    #[test]
+    fn sun_rise_set_oslo() {
+        let cases = &[
+            // (y, m, d, tz_used, expected_rise_local, expected_set_local)
+            // Skyfield UTC values shifted by tz:
+            //   2025-06-21 UTC: rise 01:53:46, set 20:43:52  → +2h DST: 03:54, 22:44
+            //   2025-12-21 UTC: rise 08:18:14, set 14:12:03  → +1h:     09:18, 15:12
+            //   2026-06-21 UTC: rise 01:53:44, set 20:43:51  → +2h DST: 03:54, 22:44
+            //   2026-12-21 UTC: rise 08:18:06, set 14:11:57  → +1h:     09:18, 15:12
+            (2025, 6, 21, 2.0,  3*60 + 54, 22*60 + 44),
+            (2025,12, 21, 1.0,  9*60 + 18, 15*60 + 12),
+            (2026, 6, 21, 2.0,  3*60 + 54, 22*60 + 44),
+            (2026,12, 21, 1.0,  9*60 + 18, 15*60 + 12),
+        ];
+        for &(y, m, d, tz, exp_rise, exp_set) in cases {
+            let (rise, set) = sun_times(y, m, d, 59.9139, 10.7522, tz)
+                .unwrap_or_else(|| panic!("sun_times returned None for {}-{}-{}", y, m, d));
+            assert_time_close(&rise, exp_rise, 3, &format!("Oslo {}-{:02}-{:02} sunrise", y, m, d));
+            assert_time_close(&set,  exp_set,  3, &format!("Oslo {}-{:02}-{:02} sunset",  y, m, d));
+        }
+    }
+
+    /// Equatorial site (lat 0) — the sun is up ~12h regardless of
+    /// season. The day length should sit within a few minutes of 12h
+    /// at the equinoxes, with sunrise near 06:00 local.
+    #[test]
+    fn sun_rise_set_equator() {
+        let (rise, set) = sun_times(2026, 3, 20, 0.0, 0.0, 0.0).expect("equator sun");
+        let rh = to_min(&rise);
+        let sh = to_min(&set);
+        let day_len = sh - rh;
+        assert!((day_len - 720).abs() <= 10,
+            "Equator equinox day length ≈ 12h, got {} → {} ({} min)",
+            rise, set, day_len);
+    }
+
+    // ── Moon phase against known new/full moons ───────────────────
+    // Reference dates from NASA Goddard / timeanddate.com.
+
+    #[test]
+    fn moon_phase_at_known_full() {
+        // 2025-01-13 22:27 UTC was full moon.
+        let p = moon_phase(2025, 1, 13);
+        assert!(p.illumination > 0.97,
+            "Full moon 2025-01-13: illum {:.4} (expected > 0.97)", p.illumination);
+    }
+
+    #[test]
+    fn moon_phase_at_known_new() {
+        // 2025-01-29 12:36 UTC was new moon.
+        let p = moon_phase(2025, 1, 29);
+        assert!(p.illumination < 0.03,
+            "New moon 2025-01-29: illum {:.4} (expected < 0.03)", p.illumination);
+    }
+
+    // ── Sanity: visible_planets returns reasonable shape ──────────
+
+    #[test]
+    fn visible_planets_smoke() {
+        let v = visible_planets(2026, 4, 7, 59.9139, 10.7522, 1.0);
+        assert!(v.len() <= 5);
+        for p in &v {
+            assert_eq!(p.rise.len(), 5, "rise should be HH:MM, got {}", p.rise);
+            assert_eq!(p.set.len(),  5, "set should be HH:MM, got {}",  p.set);
         }
     }
 }
