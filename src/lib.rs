@@ -208,7 +208,7 @@ struct OrbitalElements {
 
 struct Ephemeris {
     lat: f64, lon: f64, tz: f64,
-    d: f64, ecl: f64, ls: f64, ms: f64,
+    d: f64, ecl: f64, ls: f64,
     xs: f64, ys: f64, sidtime: f64,
     sun_ra: f64, sun_dec: f64,
     bodies: std::collections::HashMap<&'static str, OrbitalElements>,
@@ -295,7 +295,7 @@ impl Ephemeris {
         let sidtime = gmst0 + lon / 15.0;
 
         Ephemeris {
-            lat, lon, tz, d, ecl, ls, ms, xs, ys, sidtime,
+            lat, lon, tz, d, ecl, ls, xs, ys, sidtime,
             sun_ra, sun_dec, bodies, jupiter_m, saturn_m, _uranus_m: uranus_m,
         }
     }
