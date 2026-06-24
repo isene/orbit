@@ -1,6 +1,6 @@
 [package]
 name = "fe2o3-orbit"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["Geir Isene <g@isene.com>"]
 description = "Moon phases, ephemeris, sun/planet positions. Shared by Fe₂O₃ apps (nova, tock). Ported from ruby-ephemeris."
