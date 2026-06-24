@@ -457,7 +457,7 @@ impl Ephemeris {
         let mut r_b = (xeclip * xeclip + yeclip * yeclip + zeclip * zeclip).sqrt();
 
         // Perturbation corrections
-        let (mut plon, mut plat, mut pdist) = (0.0, 0.0, 0.0);
+        let (mut plon, mut plat, pdist) = (0.0, 0.0, 0.0);
         let m_j = self.jupiter_m;
         let m_s = self.saturn_m;
         match name {
