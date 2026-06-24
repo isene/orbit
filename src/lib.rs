@@ -485,6 +485,18 @@ impl Ephemeris {
         lat += plat;
         r_b += pdist;
 
+        // Recompute the heliocentric ecliptic cartesian coords from the
+        // perturbation-corrected lon/lat/r_b. Without this, the Jupiter
+        // and Saturn plon/plat corrections above are silently discarded
+        // (the geocentric step below would otherwise consume the raw,
+        // uncorrected xeclip/yeclip/zeclip). lon/lat are in degrees here,
+        // so feed them through deg() for the trig.
+        let (xeclip, yeclip, zeclip) = (
+            r_b * deg(lon).cos() * deg(lat).cos(),
+            r_b * deg(lon).sin() * deg(lat).cos(),
+            r_b * deg(lat).sin(),
+        );
+
         // Geocentric ecliptic to equatorial. The moon takes the
         // dedicated Meeus 47 path in the early-return above, so by
         // here we're always converting a heliocentric body vector
