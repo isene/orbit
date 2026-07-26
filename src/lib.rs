@@ -3,6 +3,8 @@
 //! `tock` (calendar). Planet calculations ported from
 //! [ruby-ephemeris](https://github.com/isene/ephemeris).
 
+use crust::style;
+
 use std::f64::consts::PI;
 
 // ── Structs ──────────────────────────────────────────────────────────
@@ -884,7 +886,7 @@ pub fn ephemeris_table(bodies: &[BodyObs]) -> String {
         let trans = hhmm(&b.transit);
         let set = hhmm(&b.set);
         let colored = |s: &str| -> String {
-            format!("\x1b[38;5;{}m{}\x1b[0m", color, s)
+            style::styled(s, Some(color), None, "")
         };
         out.push_str(&format!(
             "{} \u{2502} {} \u{2502} {} \u{2502} {} \u{2502} {} \u{2502} {} \u{2502} {}\n",

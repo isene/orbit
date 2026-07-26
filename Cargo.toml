@@ -13,6 +13,9 @@ categories = ["science", "command-line-utilities"]
 name = "orbit"
 
 [dependencies]
+# Pinned: the ANSI helper used here landed in 0.1.43, so a publish must
+# fail loudly until that version is on crates.io.
+crust = { version = "0.1.43", path = "../crust", package = "fe2o3-crust" }
 
 [profile.release]
 opt-level = 3
