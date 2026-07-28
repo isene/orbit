@@ -219,8 +219,19 @@ struct Ephemeris {
 
 impl Ephemeris {
     fn new(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) -> Self {
+        Self::new_at(year, month, day, 0.0, lat, lon, tz)
+    }
+
+    /// Same, for a given hour of Universal Time rather than 0h UT.
+    ///
+    /// Rise / set / transit only need the day, but a sky chart needs the
+    /// instant: the moon covers 13° of sky in a day, half a degree an
+    /// hour, so a chart drawn for 23:00 off the 0h positions puts it in
+    /// the wrong place by a whole handful of moon widths.
+    fn new_at(year: i32, month: u32, day: u32, ut_hours: f64, lat: f64, lon: f64, tz: f64) -> Self {
         let y = year; let m = month as i32; let dd = day as i32;
-        let d = (367 * y - 7 * (y + (m + 9) / 12) / 4 + 275 * m / 9 + dd - 730530) as f64;
+        let d = (367 * y - 7 * (y + (m + 9) / 12) / 4 + 275 * m / 9 + dd - 730530) as f64
+            + ut_hours / 24.0;
         let t = d / 36525.0;
         let ecl = 23.439279444 - 46.8150 / 3600.0 * t - 0.00059 / 3600.0 * t * t + 0.001813 / 3600.0 * t * t * t;
 
@@ -294,7 +305,10 @@ impl Ephemeris {
 
         let ls = (w_s + ms) % 360.0;
         let gmst0 = (ls + 180.0) / 15.0 % 24.0;
-        let sidtime = gmst0 + lon / 15.0;
+        // Schlyter: LST = GMST0 + UT + longitude. At 0h UT the UT term
+        // drops out, which is what every day-granularity caller here
+        // wants; new_at() carries it.
+        let sidtime = gmst0 + ut_hours + lon / 15.0;
 
         Ephemeris {
             lat, lon, tz, d, ecl, ls, xs, ys, sidtime,
@@ -829,6 +843,31 @@ pub fn all_bodies(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) 
     out
 }
 
+/// Where the sun, moon and planets sit on the sky at one instant, and
+/// the local sidereal time that turns any right ascension into an hour
+/// angle. `hour` is local clock time, the same clock `tz` describes.
+///
+/// This is the chart-drawing counterpart to `all_bodies`: no rise / set
+/// strings, but positions good for the hour rather than for the day.
+pub fn sky_at(
+    year: i32, month: u32, day: u32, hour: f64, lat: f64, lon: f64, tz: f64,
+) -> (f64, Vec<(&'static str, f64, f64)>) {
+    let eph = Ephemeris::new_at(year, month, day, hour - tz, lat, lon, tz);
+    let mut bodies = Vec::with_capacity(BODY_ORDER.len());
+    for &name in BODY_ORDER {
+        let (ra, dec, _, _, _) = eph.body_calc(name);
+        let name_s: &'static str = match name {
+            "sun" => "sun", "moon" => "moon", "mercury" => "mercury",
+            "venus" => "venus", "mars" => "mars", "jupiter" => "jupiter",
+            "saturn" => "saturn", "uranus" => "uranus", "neptune" => "neptune",
+            _ => "?",
+        };
+        bodies.push((name_s, ra, dec));
+    }
+    let lst = ((eph.sidtime % 24.0 + 24.0) % 24.0) * 15.0;
+    (lst, bodies)
+}
+
 /// Is a body above the horizon at the given local hour?
 /// Uses rise/set hours from all_bodies result.
 pub fn is_above(rise_h: Option<f64>, set_h: Option<f64>, always_up: bool, never_up: bool, hour: f64) -> bool {
@@ -1111,6 +1150,41 @@ mod tests {
     use super::*;
 
     // ── Sanity tests ──────────────────────────────────────────────
+
+    /// The sun sits near RA 8h30m, Dec +19° in late July. If the hour
+    /// term were wrong by a day the RA would be a degree off.
+    #[test]
+    fn test_sky_at_sun_position() {
+        let (_, bodies) = sky_at(2026, 7, 27, 12.0, 59.9, 10.7, 2.0);
+        let (_, ra, dec) = bodies.iter().find(|b| b.0 == "sun").copied().unwrap();
+        assert!((ra - 127.0).abs() < 2.0, "sun RA {ra}");
+        assert!((dec - 19.0).abs() < 1.5, "sun Dec {dec}");
+    }
+
+    /// The moon covers about half a degree an hour, so the same day at
+    /// 0h and at 23h must not give the same place.
+    #[test]
+    fn test_sky_at_moon_moves_within_the_day() {
+        let pick = |h: f64| {
+            let (_, b) = sky_at(2026, 7, 27, h, 59.9, 10.7, 2.0);
+            b.iter().find(|x| x.0 == "moon").copied().unwrap()
+        };
+        let (_, ra0, _) = pick(0.0);
+        let (_, ra23, _) = pick(23.0);
+        let moved = (ra23 - ra0 + 360.0) % 360.0;
+        assert!((8.0..18.0).contains(&moved), "moon moved {moved}° in 23h");
+    }
+
+    /// Sidereal time gains about a degree an hour on the clock, and
+    /// stays inside one turn of the sky.
+    #[test]
+    fn test_sky_at_sidereal_time_advances() {
+        let (lst0, _) = sky_at(2026, 7, 27, 0.0, 59.9, 10.7, 2.0);
+        let (lst6, _) = sky_at(2026, 7, 27, 6.0, 59.9, 10.7, 2.0);
+        assert!((0.0..360.0).contains(&lst0), "lst {lst0}");
+        let gained = (lst6 - lst0 + 360.0) % 360.0;
+        assert!((gained - 90.25).abs() < 1.0, "6h gained {gained}°");
+    }
 
     #[test]
     fn test_moon_phase_range() {
