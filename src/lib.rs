@@ -909,12 +909,27 @@ fn format_distance(d: f64) -> String {
 /// Returns a multi-line string with ANSI colors for each body.
 pub fn ephemeris_table(bodies: &[BodyObs]) -> String {
     let mut out = String::new();
-    out.push_str("Planet      \u{2502} RA       \u{2502} Dec      \u{2502} d=AU   \u{2502} Rise  \u{2502} Trans \u{2502} Set\n");
-    out.push_str("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{253C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{253C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{253C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{253C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{253C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{253C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n");
+    // Header, rule and rows all have to put their separators in the same
+    // columns. They did not: the header padded RA one wide and d=AU one
+    // narrow, and the rule's fourth segment was a dash short, so the
+    // three disagreed and the table came out skewed. Field widths here
+    // are the ones the row format below writes: 11, 7, 8, 7, 5, 5, 5.
+    out.push_str("Planet      \u{2502} RA      \u{2502} Dec      \u{2502} d=AU    \u{2502} Rise  \u{2502} Trans \u{2502} Set\n");
+    // Same columns as the header: 12, 22, 33, 43, 51, 59.
+    let rule: String = [12usize, 9, 10, 9, 7, 7, 6].iter()
+        .map(|n| "\u{2500}".repeat(*n))
+        .collect::<Vec<_>>()
+        .join("\u{253C}");
+    out.push_str(&rule);
+    out.push('\n');
     for b in bodies {
         let color = body_color_256(b.name);
         let name = format!("{} {}", body_symbol(b.name), capitalize_short(b.name));
-        let name = format!("{:<11}", name);
+        // Pad by CELLS, not chars. Every symbol carries a VS-15, so
+        // `{:<11}` counted two chars for one cell and every row came out
+        // a column short of the header.
+        let name = format!("{}{}", name,
+            " ".repeat(11usize.saturating_sub(crust::display_width(&name))));
         let ra_s = ra_to_hm(b.ra_deg);
         let dec_s = dec_to_dm(b.dec_deg);
         let d_s = format_distance(b.distance);
@@ -1417,6 +1432,55 @@ mod tests {
         for p in &v {
             assert_eq!(p.rise.len(), 5, "rise should be HH:MM, got {}", p.rise);
             assert_eq!(p.set.len(),  5, "set should be HH:MM, got {}",  p.set);
+        }
+    }
+
+    /// The header, the rule and every row have to break in the same
+    /// columns. They did not, and the table came out visibly skewed.
+    #[test]
+    fn the_ephemeris_table_lines_up() {
+        fn strip_ansi(s: &str) -> String {
+            let mut out = String::new();
+            let mut chars = s.chars();
+            while let Some(c) = chars.next() {
+                if c == '\u{1b}' {
+                    for c2 in chars.by_ref() {
+                        if c2.is_ascii_alphabetic() { break; }
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+        // Columns are CELLS, not chars: every symbol carries a VS-15, so
+        // counting chars is exactly the mistake this test exists to catch.
+        fn bars(line: &str) -> Vec<usize> {
+            let mut out = Vec::new();
+            let mut walker = crust::WidthWalker::new();
+            let mut col = 0usize;
+            for c in line.chars() {
+                if c == '\u{2502}' || c == '\u{253C}' { out.push(col); }
+                col += walker.push(c);
+            }
+            out
+        }
+        let body = |name: &'static str, ra: f64, dec: f64, dist: f64| BodyObs {
+            name, ra_deg: ra, dec_deg: dec, distance: dist,
+            rise: "04:10".into(), transit: "12:23".into(), set: "20:36".into(),
+            rise_h: None, set_h: None, always_up: false, never_up: false,
+        };
+        let table = ephemeris_table(&[
+            body("sun", 136.0, 16.75, 2.0287),
+            body("moon", 38.9, 19.55, 58.5935),   // two-digit distance
+            body("neptune", 4.5, 0.38, 29.2115),
+            body("mercury", 116.7, 20.3, 0.9738), // leading-zero distance
+        ]);
+        let lines: Vec<String> = table.lines().map(strip_ansi).collect();
+        let want = bars(&lines[0]);
+        assert_eq!(want, vec![12, 22, 33, 43, 51, 59], "header columns");
+        for (i, l) in lines.iter().enumerate() {
+            assert_eq!(bars(l), want, "line {} breaks elsewhere:\n{}\n{}", i, lines[0], l);
         }
     }
 }
