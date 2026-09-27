@@ -515,10 +515,15 @@ impl Ephemeris {
 
         // Geocentric ecliptic to equatorial. The moon takes the
         // dedicated Meeus 47 path in the early-return above, so by
-        // here we're always converting a heliocentric body vector
-        // to the geocentric equatorial frame.
-        let (xeclip2, yeclip2, zeclip2) =
-            (xeclip + self.xs, yeclip + self.ys, zeclip);
+        // here we're converting a heliocentric body vector to the
+        // geocentric equatorial frame. The sun's elements already give
+        // its place seen from the Earth; adding the Earth-to-Sun vector
+        // again doubled its distance to 2 AU.
+        let (xeclip2, yeclip2, zeclip2) = if name == "sun" {
+            (xeclip, yeclip, zeclip)
+        } else {
+            (xeclip + self.xs, yeclip + self.ys, zeclip)
+        };
 
         let xequat = xeclip2;
         let yequat = yeclip2 * deg(self.ecl).cos() - zeclip2 * deg(self.ecl).sin();
@@ -1368,6 +1373,13 @@ mod tests {
     /// Skyfield (UTC), then shifted by the named tz offset.
     /// Tolerance: 3 minutes, which is well within Schlyter-class
     /// accuracy for sun rise/set at Norwegian latitudes.
+    #[test]
+    fn the_sun_is_one_au_away() {
+        let sun = all_bodies(2026, 9, 27, 59.9, 10.7, 2.0).into_iter().find(|b| b.name == "sun").unwrap();
+        assert!((0.98..1.02).contains(&sun.distance), "the sun at {} AU", sun.distance);
+        assert!((sun.ra_deg - 183.59).abs() < 0.05, "and where it was: RA {}", sun.ra_deg);
+    }
+
     #[test]
     fn sun_rise_set_oslo() {
         let cases = &[
