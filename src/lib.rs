@@ -3,9 +3,10 @@
 //! `tock` (calendar). Planet calculations ported from
 //! [ruby-ephemeris](https://github.com/isene/ephemeris).
 
+pub mod astro;
+
 use crust::style;
 
-use std::f64::consts::PI;
 
 // ── Structs ──────────────────────────────────────────────────────────
 
@@ -33,19 +34,6 @@ pub struct VisiblePlanet {
 
 // ── Constants ────────────────────────────────────────────────────────
 
-const SYNODIC_MONTH: f64 = 29.530588853;
-const NEW_MOON_EPOCH_JD: f64 = 2451550.1;
-
-const PHASE_NAMES: [&str; 8] = [
-    "New Moon", "Waxing Crescent", "First Quarter", "Waxing Gibbous",
-    "Full Moon", "Waning Gibbous", "Last Quarter", "Waning Crescent",
-];
-
-const PHASE_SYMBOLS: [&str; 8] = [
-    "\u{1F311}", "\u{1F312}", "\u{1F313}", "\u{1F314}",
-    "\u{1F315}", "\u{1F316}", "\u{1F317}", "\u{1F318}",
-];
-
 pub const PLANET_SYMBOLS: &[(&str, &str)] = &[
     ("mercury", "\u{263F}"), ("venus", "\u{2640}"), ("mars", "\u{2642}"),
     ("jupiter", "\u{2643}"), ("saturn", "\u{2644}"),
@@ -55,8 +43,6 @@ pub const BODY_COLORS: &[(&str, &str)] = &[
     ("sun", "FFD700"), ("moon", "888888"), ("mercury", "8F6E54"),
     ("venus", "E6B07C"), ("mars", "BC2732"), ("jupiter", "C08040"), ("saturn", "E8D9A0"),
 ];
-
-fn deg(d: f64) -> f64 { d * PI / 180.0 }
 
 // ── Meeus chapter 47 moon tables (verified against pymeeus 0.5.12)──
 //
@@ -202,434 +188,6 @@ const MOON_B: &[(i8, i8, i8, i8, i32)] = &[
     (  2, -2,  0,  1,       107),
 ];
 
-// ── Ephemeris engine (ported from ruby-ephemeris) ───────────────────
-
-struct OrbitalElements {
-    n: f64, i: f64, w: f64, a: f64, e: f64, m: f64,
-}
-
-struct Ephemeris {
-    lat: f64, lon: f64, tz: f64,
-    d: f64, ecl: f64, ls: f64,
-    xs: f64, ys: f64, sidtime: f64,
-    sun_ra: f64, sun_dec: f64,
-    bodies: std::collections::HashMap<&'static str, OrbitalElements>,
-    jupiter_m: f64, saturn_m: f64, _uranus_m: f64,
-}
-
-impl Ephemeris {
-    fn new(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) -> Self {
-        Self::new_at(year, month, day, 0.0, lat, lon, tz)
-    }
-
-    /// Same, for a given hour of Universal Time rather than 0h UT.
-    ///
-    /// Rise / set / transit only need the day, but a sky chart needs the
-    /// instant: the moon covers 13° of sky in a day, half a degree an
-    /// hour, so a chart drawn for 23:00 off the 0h positions puts it in
-    /// the wrong place by a whole handful of moon widths.
-    fn new_at(year: i32, month: u32, day: u32, ut_hours: f64, lat: f64, lon: f64, tz: f64) -> Self {
-        let y = year; let m = month as i32; let dd = day as i32;
-        let d = (367 * y - 7 * (y + (m + 9) / 12) / 4 + 275 * m / 9 + dd - 730530) as f64
-            + ut_hours / 24.0;
-        let t = d / 36525.0;
-        let ecl = 23.439279444 - 46.8150 / 3600.0 * t - 0.00059 / 3600.0 * t * t + 0.001813 / 3600.0 * t * t * t;
-
-        let mut bodies = std::collections::HashMap::new();
-        bodies.insert("sun", OrbitalElements {
-            n: 0.0, i: 0.0, w: 282.9404 + 4.70935e-5 * d, a: 1.0,
-            e: 0.016709 - 1.151e-9 * d, m: 356.0470 + 0.9856002585 * d,
-        });
-        bodies.insert("moon", OrbitalElements {
-            n: 125.1228 - 0.0529538083 * d, i: 5.1454,
-            w: 318.0634 + 0.1643573223 * d, a: 60.2666, e: 0.054900,
-            m: 115.3654 + 13.0649929509 * d,
-        });
-        bodies.insert("mercury", OrbitalElements {
-            n: 48.3313 + 3.24587e-5 * d, i: 7.0047 + 5.00e-8 * d,
-            w: 29.1241 + 1.01444e-5 * d, a: 0.387098, e: 0.205635 + 5.59e-10 * d,
-            m: 168.6562 + 4.0923344368 * d,
-        });
-        bodies.insert("venus", OrbitalElements {
-            n: 76.6799 + 2.46590e-5 * d, i: 3.3946 + 2.75e-8 * d,
-            w: 54.8910 + 1.38374e-5 * d, a: 0.723330, e: 0.006773 - 1.302e-9 * d,
-            m: 48.0052 + 1.6021302244 * d,
-        });
-        bodies.insert("mars", OrbitalElements {
-            n: 49.5574 + 2.11081e-5 * d, i: 1.8497 - 1.78e-8 * d,
-            w: 286.5016 + 2.92961e-5 * d, a: 1.523688, e: 0.093405 + 2.516e-9 * d,
-            m: 18.6021 + 0.5240207766 * d,
-        });
-        bodies.insert("jupiter", OrbitalElements {
-            n: 100.4542 + 2.76854e-5 * d, i: 1.3030 - 1.557e-7 * d,
-            w: 273.8777 + 1.64505e-5 * d, a: 5.20256, e: 0.048498 + 4.469e-9 * d,
-            m: 19.8950 + 0.0830853001 * d,
-        });
-        bodies.insert("saturn", OrbitalElements {
-            n: 113.6634 + 2.38980e-5 * d, i: 2.4886 - 1.081e-7 * d,
-            w: 339.3939 + 2.97661e-5 * d, a: 9.55475, e: 0.055546 - 9.499e-9 * d,
-            m: 316.9670 + 0.0334442282 * d,
-        });
-        bodies.insert("uranus", OrbitalElements {
-            n: 74.0005 + 1.3978e-5 * d, i: 0.7733 + 1.9e-8 * d,
-            w: 96.6612 + 3.0565e-5 * d, a: 19.18171 - 1.55e-8 * d,
-            e: 0.047318 + 7.45e-9 * d, m: 142.5905 + 0.011725806 * d,
-        });
-        bodies.insert("neptune", OrbitalElements {
-            n: 131.7806 + 3.0173e-5 * d, i: 1.7700 - 2.55e-7 * d,
-            w: 272.8461 - 6.027e-6 * d, a: 30.05826 + 3.313e-8 * d,
-            e: 0.008606 + 2.15e-9 * d, m: 260.2471 + 0.005995147 * d,
-        });
-
-        let jupiter_m = (19.8950 + 0.0830853001 * d) % 360.0;
-        let saturn_m = (316.9670 + 0.0334442282 * d) % 360.0;
-        let uranus_m = (142.5905 + 0.011725806 * d) % 360.0;
-
-        // Compute sun position
-        let sun = &bodies["sun"];
-        let w_s = (sun.w + 360.0) % 360.0;
-        let ms = sun.m % 360.0;
-        let es = ms + (180.0 / PI) * sun.e * deg(ms).sin() * (1.0 + sun.e * deg(ms).cos());
-        let x = deg(es).cos() - sun.e;
-        let y = deg(es).sin() * (1.0 - sun.e * sun.e).sqrt();
-        let v = y.atan2(x) * 180.0 / PI;
-        let r = (x * x + y * y).sqrt();
-        let tlon = (v + w_s) % 360.0;
-        let xs = r * deg(tlon).cos();
-        let ys = r * deg(tlon).sin();
-        let xe = xs;
-        let ye = ys * deg(ecl).cos();
-        let ze = ys * deg(ecl).sin();
-        let sun_ra = ((ye.atan2(xe) * 180.0 / PI) + 360.0) % 360.0;
-        let sun_dec = ze.atan2((xe * xe + ye * ye).sqrt()) * 180.0 / PI;
-
-        let ls = (w_s + ms) % 360.0;
-        let gmst0 = (ls + 180.0) / 15.0 % 24.0;
-        // Schlyter: LST = GMST0 + UT + longitude. At 0h UT the UT term
-        // drops out, which is what every day-granularity caller here
-        // wants; new_at() carries it.
-        let sidtime = gmst0 + ut_hours + lon / 15.0;
-
-        Ephemeris {
-            lat, lon, tz, d, ecl, ls, xs, ys, sidtime,
-            sun_ra, sun_dec, bodies, jupiter_m, saturn_m, _uranus_m: uranus_m,
-        }
-    }
-
-    /// Moon position via Meeus chapter 47 (full 60-term Σl + Σr
-    /// longitude table, 60-term Σb latitude table, plus the
-    /// A1/A2/A3 long-period corrections). Returns
-    /// (ra_deg, dec_deg, distance_earth_radii). Distance is in earth
-    /// radii so the topocentric parallax math in `body_calc` stays
-    /// unit-consistent with the Schlyter path.
-    ///
-    /// Apparent position in the mean equator/equinox of date. No
-    /// nutation in longitude (Δψ ≈ 17" is below the algorithm's
-    /// residual error against modern JPL DE441 / IAU 2006/2000A).
-    fn moon_radec(&self) -> (f64, f64, f64) {
-        // Julian centuries from J2000 (TT). Schlyter's `d` counts
-        // days from 2000-01-01 00:00 UT, so JDE − 2451545.0 = d − 1.5.
-        let t = (self.d - 1.5) / 36525.0;
-        let t2 = t * t;
-        let t3 = t2 * t;
-        let t4 = t3 * t;
-
-        // Mean elements (Meeus 47.1-47.6, degrees)
-        let lp =  218.3164477 + 481267.88123421 * t - 0.0015786 * t2
-                  + t3 / 538841.0 - t4 / 65194000.0;
-        let d  =  297.8501921 + 445267.1114034  * t - 0.0018819 * t2
-                  + t3 / 545868.0 - t4 / 113065000.0;
-        let m  =  357.5291092 +  35999.0502909  * t - 0.0001536 * t2
-                  + t3 / 24490000.0;
-        let mp =  134.9633964 + 477198.8675055  * t + 0.0087414 * t2
-                  + t3 / 69699.0  - t4 / 14712000.0;
-        let f  =   93.2720950 + 483202.0175233  * t - 0.0036539 * t2
-                  - t3 / 3526000.0 + t4 / 863310000.0;
-
-        // Three additional long-period arguments (Meeus 47.7)
-        let a1 = 119.75 + 131.849   * t;
-        let a2 =  53.09 + 479264.290 * t;
-        let a3 = 313.45 + 481266.484 * t;
-
-        // Eccentricity correction for Earth's orbit, applied to
-        // any periodic-term coefficient with |M| > 0.
-        let e = 1.0 - 0.002516 * t - 0.0000074 * t2;
-        let e2 = e * e;
-
-        let dr  = deg(d);
-        let mr  = deg(m);
-        let mpr = deg(mp);
-        let fr  = deg(f);
-
-        let mut sigma_l = 0.0_f64;
-        let mut sigma_r = 0.0_f64;
-        for &(di, mi, mpi, fi, lc, rc) in MOON_LR.iter() {
-            let arg = (di as f64) * dr
-                    + (mi as f64) * mr
-                    + (mpi as f64) * mpr
-                    + (fi as f64) * fr;
-            let scale = match mi.abs() { 0 => 1.0, 1 => e, _ => e2 };
-            sigma_l += (lc as f64) * scale * arg.sin();
-            sigma_r += (rc as f64) * scale * arg.cos();
-        }
-
-        let mut sigma_b = 0.0_f64;
-        for &(di, mi, mpi, fi, bc) in MOON_B.iter() {
-            let arg = (di as f64) * dr
-                    + (mi as f64) * mr
-                    + (mpi as f64) * mpr
-                    + (fi as f64) * fr;
-            let scale = match mi.abs() { 0 => 1.0, 1 => e, _ => e2 };
-            sigma_b += (bc as f64) * scale * arg.sin();
-        }
-
-        // Additional A1/L'-F/A2 longitude terms and A3 + L' + cross
-        // terms in latitude (Meeus 47.7).
-        sigma_l += 3958.0 * deg(a1).sin();
-        sigma_l += 1962.0 * deg(lp - f).sin();
-        sigma_l +=  318.0 * deg(a2).sin();
-
-        sigma_b += -2235.0 * deg(lp).sin();
-        sigma_b +=   382.0 * deg(a3).sin();
-        sigma_b +=   175.0 * deg(a1 - f).sin();
-        sigma_b +=   175.0 * deg(a1 + f).sin();
-        sigma_b +=   127.0 * deg(lp - mp).sin();
-        sigma_b +=  -115.0 * deg(lp + mp).sin();
-
-        // Geocentric ecliptic of date (degrees) and distance (km).
-        let lambda = (lp + sigma_l / 1_000_000.0).rem_euclid(360.0);
-        let beta = sigma_b / 1_000_000.0;
-        let dist_km = 385000.56 + sigma_r / 1000.0;
-
-        // Ecliptic → mean equator of date via the obliquity already
-        // computed in Ephemeris::new.
-        let lam = deg(lambda);
-        let bet = deg(beta);
-        let eps = deg(self.ecl);
-        let y_eq = lam.sin() * eps.cos() - bet.tan() * eps.sin();
-        let x_eq = lam.cos();
-        let mut ra = y_eq.atan2(x_eq) * 180.0 / PI;
-        if ra < 0.0 { ra += 360.0; }
-        let sin_dec = bet.sin() * eps.cos() + bet.cos() * eps.sin() * lam.sin();
-        let dec = sin_dec.clamp(-1.0, 1.0).asin() * 180.0 / PI;
-
-        // Distance in earth radii: par = asin(1/r) in radians for the
-        // moon-radius parallax in topocentric correction.
-        let r_b = dist_km / 6378.14;
-        (ra, dec, r_b)
-    }
-
-    fn body_calc(&self, name: &str) -> (f64, f64, f64, f64, f64) {
-        // Moon: Meeus chapter 47 path. Schlyter's truncated series in
-        // the planet branch below caps at ~1° worst-case for the moon;
-        // Meeus 47 with the full 60-term tables gets us to ~1'.
-        if name == "moon" {
-            let (ra, dec_val, r_b) = self.moon_radec();
-            // Topocentric correction (moon parallax ~1°, real fix).
-            let par = (1.0 / r_b).asin() * 180.0 / PI;
-            let gclat = self.lat - 0.1924 * deg(2.0 * self.lat).sin();
-            let rho = 0.99833 + 0.00167 * deg(2.0 * self.lat).cos();
-            let lst = self.sidtime * 15.0;
-            let ha = (lst - ra + 360.0) % 360.0;
-            let cos_dec = deg(dec_val).cos();
-            let top_ra = if cos_dec.abs() < 1e-9 {
-                ra
-            } else {
-                ra - par * rho * deg(gclat).cos() * deg(ha).sin() / cos_dec
-            };
-            let top_dec = dec_val - par * rho * (
-                deg(gclat).sin() * cos_dec
-                - deg(gclat).cos() * deg(ha).cos() * deg(dec_val).sin()
-            );
-            return (top_ra, top_dec, r_b, ra, dec_val);
-        }
-
-        let b = &self.bodies[name];
-        let n_b = b.n; let i_b = b.i;
-        let w_b = (b.w + 360.0) % 360.0;
-        let a_b = b.a; let e_b = b.e;
-        let m_b = b.m % 360.0;
-
-        // Solve Kepler's equation iteratively
-        let mut e1 = m_b + (180.0 / PI) * e_b * deg(m_b).sin() * (1.0 + e_b * deg(m_b).cos());
-        let mut e0;
-        loop {
-            e0 = e1;
-            e1 = e0 - (e0 - (180.0 / PI) * e_b * deg(e0).sin() - m_b) / (1.0 - e_b * deg(e0).cos());
-            if (e1 - e0).abs() <= 0.0005 { break; }
-        }
-        let e = e1;
-        let x = a_b * (deg(e).cos() - e_b);
-        let y = a_b * (1.0 - e_b * e_b).sqrt() * deg(e).sin();
-        let r = (x * x + y * y).sqrt();
-        let v = ((y.atan2(x) * 180.0 / PI) + 360.0) % 360.0;
-
-        let xeclip = r * (deg(n_b).cos() * deg(v + w_b).cos() - deg(n_b).sin() * deg(v + w_b).sin() * deg(i_b).cos());
-        let yeclip = r * (deg(n_b).sin() * deg(v + w_b).cos() + deg(n_b).cos() * deg(v + w_b).sin() * deg(i_b).cos());
-        let zeclip = r * deg(v + w_b).sin() * deg(i_b).sin();
-
-        let mut lon = (yeclip.atan2(xeclip) * 180.0 / PI + 360.0) % 360.0;
-        let mut lat = zeclip.atan2((xeclip * xeclip + yeclip * yeclip).sqrt()) * 180.0 / PI;
-        let mut r_b = (xeclip * xeclip + yeclip * yeclip + zeclip * zeclip).sqrt();
-
-        // Perturbation corrections
-        let (mut plon, mut plat, pdist) = (0.0, 0.0, 0.0);
-        let m_j = self.jupiter_m;
-        let m_s = self.saturn_m;
-        match name {
-            "jupiter" => {
-                plon += -0.332 * deg(2.0 * m_j - 5.0 * m_s - 67.6).sin();
-                plon += -0.056 * deg(2.0 * m_j - 2.0 * m_s + 21.0).sin();
-                plon += 0.042 * deg(3.0 * m_j - 5.0 * m_s + 21.0).sin();
-                plon += -0.036 * deg(m_j - 2.0 * m_s).sin();
-                plon += 0.022 * deg(m_j - m_s).cos();
-                plon += 0.023 * deg(2.0 * m_j - 3.0 * m_s + 52.0).sin();
-                plon += -0.016 * deg(m_j - 5.0 * m_s - 69.0).sin();
-            }
-            "saturn" => {
-                plon += 0.812 * deg(2.0 * m_j - 5.0 * m_s - 67.6).sin();
-                plon += -0.229 * deg(2.0 * m_j - 4.0 * m_s - 2.0).cos();
-                plon += 0.119 * deg(m_j - 2.0 * m_s - 3.0).sin();
-                plon += 0.046 * deg(2.0 * m_j - 6.0 * m_s - 69.0).sin();
-                plon += 0.014 * deg(m_j - 3.0 * m_s + 32.0).sin();
-                plat += -0.020 * deg(2.0 * m_j - 4.0 * m_s - 2.0).cos();
-                plat += 0.018 * deg(2.0 * m_j - 6.0 * m_s - 49.0).sin();
-            }
-            _ => {}
-        }
-        lon += plon;
-        lat += plat;
-        r_b += pdist;
-
-        // Recompute the heliocentric ecliptic cartesian coords from the
-        // perturbation-corrected lon/lat/r_b. Without this, the Jupiter
-        // and Saturn plon/plat corrections above are silently discarded
-        // (the geocentric step below would otherwise consume the raw,
-        // uncorrected xeclip/yeclip/zeclip). lon/lat are in degrees here,
-        // so feed them through deg() for the trig.
-        let (xeclip, yeclip, zeclip) = (
-            r_b * deg(lon).cos() * deg(lat).cos(),
-            r_b * deg(lon).sin() * deg(lat).cos(),
-            r_b * deg(lat).sin(),
-        );
-
-        // Geocentric ecliptic to equatorial. The moon takes the
-        // dedicated Meeus 47 path in the early-return above, so by
-        // here we're converting a heliocentric body vector to the
-        // geocentric equatorial frame. The sun's elements already give
-        // its place seen from the Earth; adding the Earth-to-Sun vector
-        // again doubled its distance to 2 AU.
-        let (xeclip2, yeclip2, zeclip2) = if name == "sun" {
-            (xeclip, yeclip, zeclip)
-        } else {
-            (xeclip + self.xs, yeclip + self.ys, zeclip)
-        };
-
-        let xequat = xeclip2;
-        let yequat = yeclip2 * deg(self.ecl).cos() - zeclip2 * deg(self.ecl).sin();
-        let zequat = yeclip2 * deg(self.ecl).sin() + zeclip2 * deg(self.ecl).cos();
-
-        let ra = (yequat.atan2(xequat) * 180.0 / PI + 360.0) % 360.0;
-        let dec_val = zequat.atan2((xequat * xequat + yequat * yequat).sqrt()) * 180.0 / PI;
-        let dist = (xequat * xequat + yequat * yequat + zequat * zequat).sqrt();
-
-        // Topocentric correction (parallax shift from geocentric to
-        // observer-on-surface). Significant for the moon (~1°),
-        // tiny for everything else. The earlier form used an
-        // auxiliary angle `g = atan(tan(gclat) / cos(ha))` and
-        // divided the dec correction by sin(g) — which goes NaN at
-        // gclat = 0 (observer on the equator) and at hour angles
-        // where cos(ha) flips sign. Replaced with the direct trig
-        // (Meeus AA 40.6) that has no removable singularity.
-        //
-        // Note: positions stay in equator-of-date — Schlyter's
-        // linear w/n element terms already account for the secular
-        // precession of the orbits, so an explicit J2000→date
-        // rotation here would double-count by ~50"/year.
-        let par = (8.794 / 3600.0) / r_b;
-        let gclat = self.lat - 0.1924 * deg(2.0 * self.lat).sin();
-        let rho = 0.99833 + 0.00167 * deg(2.0 * self.lat).cos();
-        let lst = self.sidtime * 15.0;
-        let ha = (lst - ra + 360.0) % 360.0;
-        let cos_dec = deg(dec_val).cos();
-        let top_ra = if cos_dec.abs() < 1e-9 {
-            ra
-        } else {
-            ra - par * rho * deg(gclat).cos() * deg(ha).sin() / cos_dec
-        };
-        let top_dec = dec_val - par * rho * (
-            deg(gclat).sin() * cos_dec
-            - deg(gclat).cos() * deg(ha).cos() * deg(dec_val).sin()
-        );
-
-        (top_ra, top_dec, dist, ra, dec_val)
-    }
-
-    fn alt_az(&self, ra: f64, dec: f64, time: f64) -> (f64, f64) {
-        let ha = (time - ra / 15.0) * 15.0;
-        let x = deg(ha).cos() * deg(dec).cos();
-        let y = deg(ha).sin() * deg(dec).cos();
-        let z = deg(dec).sin();
-        let xhor = x * deg(self.lat).sin() - z * deg(self.lat).cos();
-        let yhor = y;
-        let zhor = x * deg(self.lat).cos() + z * deg(self.lat).sin();
-        let az = (yhor.atan2(xhor) * 180.0 / PI + 180.0) % 360.0;
-        let alt = zhor.asin() * 180.0 / PI;
-        (alt, az)
-    }
-
-    fn body_alt_az(&self, name: &str, hour: f64) -> (f64, f64) {
-        let (ra, dec, _, _, _) = self.body_calc(name);
-        self.alt_az(ra, dec, hour)
-    }
-
-    /// Rise / transit / set times for a body at (ra, dec). `h0` is the
-    /// true altitude at which the rise/set event is defined — set
-    /// it to:
-    ///   -0.833° for the sun (upper-limb + 34' refraction + 16' radius)
-    ///   +0.125° for the moon (parallax - refraction - radius)
-    ///   -0.5667° for stars / planets (just standard refraction)
-    /// or 0° for the geometric horizon.
-    ///
-    /// Earlier this function ignored `h0` entirely (assumed 0°). At
-    /// Oslo's 60° latitude on the summer solstice that omission cost
-    /// ~12 minutes per end on sun rise/set — half the half-day-length
-    /// inflation that h0 = -0.833° gives via Meeus 15.1.
-    fn rts(&self, ra: f64, dec: f64, h0: f64) -> (String, String, String) {
-        let transit = (ra - self.ls - self.lon) / 15.0 + 12.0 + self.tz;
-        let transit = (transit + 24.0) % 24.0;
-        let sin_h0 = deg(h0).sin();
-        let phi = deg(self.lat);
-        let delta = deg(dec);
-        let denom = phi.cos() * delta.cos();
-        if denom.abs() < 1e-12 {
-            return ("never".into(), format_hhmm(transit), "always".into());
-        }
-        let cos_lha = (sin_h0 - phi.sin() * delta.sin()) / denom;
-        if cos_lha < -1.0 {
-            return ("always".into(), format_hhmm(transit), "never".into());
-        }
-        if cos_lha > 1.0 {
-            return ("never".into(), format_hhmm(transit), "always".into());
-        }
-        let lha_h = cos_lha.acos() * 180.0 / PI / 15.0;
-        let rise = (transit - lha_h + 24.0) % 24.0;
-        let set = (transit + lha_h + 24.0) % 24.0;
-        (format_hhmm(rise), format_hhmm(transit), format_hhmm(set))
-    }
-}
-
-/// Standard rise/set altitudes for each body, in degrees. The sun and
-/// moon get special-case offsets; everything else uses the generic
-/// "stars and planets" refraction-only floor.
-fn rise_altitude(body: &str) -> f64 {
-    match body {
-        "sun"  => -0.8333,
-        "moon" =>  0.125,
-        _      => -0.5667,
-    }
-}
-
 // ── Public API ───────────────────────────────────────────────────────
 
 fn julian_date(y: i32, m: u32, d: u32) -> f64 {
@@ -646,18 +204,17 @@ pub fn julian_date_now(y: i32, m: u32, d: u32, hour: u32, minute: u32, sec: u32)
 // ── Moon phase ──────────────────────────────────────────────────────
 
 pub fn moon_phase(year: i32, month: u32, day: u32) -> MoonPhase {
-    let jd = julian_date(year, month, day);
-    let days_since = jd - NEW_MOON_EPOCH_JD;
-    let mut phase = (days_since / SYNODIC_MONTH) % 1.0;
-    if phase < 0.0 { phase += 1.0; }
-    let illumination = (1.0 - (phase * 2.0 * PI).cos()) / 2.0;
-    let phase_index = ((phase * 8.0).floor() as usize) % 8;
+    let p = astro::moon_phase(year, month, day);
+    // `phase` is how far the moon is round from the sun at 0h UT, as a
+    // part of a full turn. Callers add the hours of the day to it.
+    let s = astro::sky_jd(astro::jd(year, month, day), 0.0, 0.0, 0.0);
+    let turn = (astro::pos(&s, "moon").lon - s.sun_lon).rem_euclid(360.0) / 360.0;
     MoonPhase {
-        illumination: (illumination * 10000.0).round() / 10000.0,
-        phase: (phase * 10000.0).round() / 10000.0,
-        phase_name: PHASE_NAMES[phase_index],
-        symbol: PHASE_SYMBOLS[phase_index],
-        phase_index,
+        illumination: (astro::moon_lit(&s) * 10000.0).round() / 10000.0,
+        phase: (turn * 10000.0).round() / 10000.0,
+        phase_name: p.name,
+        symbol: p.symbol,
+        phase_index: p.index,
     }
 }
 
@@ -666,10 +223,7 @@ pub fn moon_symbol(year: i32, month: u32, day: u32) -> &'static str {
 }
 
 pub fn notable_phase(year: i32, month: u32, day: u32) -> bool {
-    let today = moon_phase(year, month, day);
-    if !matches!(today.phase_index, 0 | 2 | 4 | 6) { return false; }
-    let (py, pm, pd) = prev_day(year, month, day);
-    moon_phase(py, pm, pd).phase_index != today.phase_index
+    astro::notable_phase(year, month, day)
 }
 
 pub fn notable_phases_in_month(year: i32, month: u32) -> Vec<NotablePhase> {
@@ -696,37 +250,36 @@ pub fn astro_events_for_year(year: i32, month: u32, day: u32) -> Vec<String> {
         let p = moon_phase(year, month, day);
         events.push(format!("{} {}", p.symbol, p.phase_name));
     }
-    match (month, day) {
-        (6, 21)  => events.push("\u{2600} Summer Solstice".into()),
-        (12, 21) => events.push("\u{2744} Winter Solstice".into()),
-        (3, 20)  => events.push("\u{2600} Vernal Equinox".into()),
-        (9, 22)  => events.push("\u{2600} Autumnal Equinox".into()),
-        _ => {}
+    let seasons = [
+        "\u{2600} Vernal Equinox", "\u{2600} Summer Solstice",
+        "\u{2600} Autumnal Equinox", "\u{2744} Winter Solstice",
+    ];
+    for (which, text) in seasons.iter().enumerate() {
+        let (_, m, d, _, _) = astro::date_of(astro::season(year, which as u32));
+        if (m, d) == (month, day) { events.push(text.to_string()); }
     }
-    match (month, day) {
-        (1, 3)   => events.push("\u{2604} Quadrantids peak".into()),
-        (4, 22)  => events.push("\u{2604} Lyrids peak".into()),
-        (5, 6)   => events.push("\u{2604} Eta Aquariids peak".into()),
-        (7, 30)  => events.push("\u{2604} Delta Aquariids peak".into()),
-        (8, 12)  => events.push("\u{2604} Perseids peak".into()),
-        (10, 8)  => events.push("\u{2604} Draconids peak".into()),
-        (10, 21) => events.push("\u{2604} Orionids peak".into()),
-        (11, 5)  => events.push("\u{2604} Taurids peak".into()),
-        (11, 17) => events.push("\u{2604} Leonids peak".into()),
-        (12, 14) => events.push("\u{2604} Geminids peak".into()),
-        (12, 22) => events.push("\u{2604} Ursids peak".into()),
-        _ => {}
+    for sh in astro::showers() {
+        if (sh.month, sh.day) == (month, day) {
+            events.push(format!("\u{2604} {} peak", sh.name));
+        }
     }
     events
 }
 
 // ── Sun times (via ephemeris engine) ────────────────────────────────
 
+/// A time that does not happen on the day ("none") shows as "--:--".
+fn clock(s: &str) -> String {
+    if s == "none" { "--:--".into() } else { s.to_string() }
+}
+
+fn rise_and_set(t: astro::Times) -> Option<(String, String)> {
+    if t.rise == "never" || t.rise == "always" { return None; }
+    Some((clock(&t.rise), clock(&t.set)))
+}
+
 pub fn sun_times(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) -> Option<(String, String)> {
-    let eph = Ephemeris::new(year, month, day, lat, lon, tz);
-    let (rise, _, set) = eph.rts(eph.sun_ra, eph.sun_dec, rise_altitude("sun"));
-    if rise == "never" || rise == "always" { return None; }
-    Some((truncate_hms(&rise), truncate_hms(&set)))
+    rise_and_set(astro::sun_times(year, month, day, lat, lon, tz))
 }
 
 pub fn sun_times_oslo(year: i32, month: u32, day: u32) -> Option<(String, String)> {
@@ -735,11 +288,7 @@ pub fn sun_times_oslo(year: i32, month: u32, day: u32) -> Option<(String, String
 
 /// Moon rise and set times via ephemeris.
 pub fn moon_times(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) -> Option<(String, String)> {
-    let eph = Ephemeris::new(year, month, day, lat, lon, tz);
-    let (ra, dec, _, _, _) = eph.body_calc("moon");
-    let (rise, _, set) = eph.rts(ra, dec, rise_altitude("moon"));
-    if rise == "never" || rise == "always" { return None; }
-    Some((truncate_hms(&rise), truncate_hms(&set)))
+    rise_and_set(astro::moon_times(year, month, day, lat, lon, tz))
 }
 
 // ── Visible planets (via ephemeris engine) ──────────────────────────
@@ -825,24 +374,24 @@ fn parse_hhmm(s: &str) -> Option<f64> {
 }
 
 pub fn all_bodies(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) -> Vec<BodyObs> {
-    let eph = Ephemeris::new(year, month, day, lat, lon, tz);
+    let s = astro::sky(year, month, day, lat, lon, tz);
     let mut out = Vec::with_capacity(BODY_ORDER.len());
     for &name in BODY_ORDER {
-        let (ra, dec, dist, _, _) = eph.body_calc(name);
-        let (rise, transit, set) = eph.rts(ra, dec, rise_altitude(name));
-        let always_up = rise == "always";
-        let never_up = rise == "never";
-        let rise_h = if always_up || never_up { None } else { parse_hhmm(&rise) };
-        let set_h = if always_up || never_up { None } else { parse_hhmm(&set) };
-        let name_s: &'static str = match name {
-            "sun" => "sun", "moon" => "moon", "mercury" => "mercury",
-            "venus" => "venus", "mars" => "mars", "jupiter" => "jupiter",
-            "saturn" => "saturn", "uranus" => "uranus", "neptune" => "neptune",
-            _ => "?",
+        let p = astro::pos(&s, name);
+        let t = astro::body_times(year, month, day, name, lat, lon, tz);
+        let always_up = t.rise == "always";
+        let never_up = t.rise == "never";
+        // No rise on the day: it was up from midnight. No set: up to midnight.
+        let hour = |text: &str, missing: f64| {
+            if always_up || never_up { None }
+            else if text == "none" { Some(missing) }
+            else { parse_hhmm(text) }
         };
         out.push(BodyObs {
-            name: name_s, ra_deg: ra, dec_deg: dec, distance: dist,
-            rise, transit, set, rise_h, set_h, always_up, never_up,
+            name, ra_deg: p.ra, dec_deg: p.dec, distance: p.dist,
+            rise_h: hour(&t.rise, 0.0), set_h: hour(&t.set, 24.0),
+            rise: clock(&t.rise), transit: clock(&t.transit), set: clock(&t.set),
+            always_up, never_up,
         });
     }
     out
@@ -857,20 +406,11 @@ pub fn all_bodies(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) 
 pub fn sky_at(
     year: i32, month: u32, day: u32, hour: f64, lat: f64, lon: f64, tz: f64,
 ) -> (f64, Vec<(&'static str, f64, f64)>) {
-    let eph = Ephemeris::new_at(year, month, day, hour - tz, lat, lon, tz);
-    let mut bodies = Vec::with_capacity(BODY_ORDER.len());
-    for &name in BODY_ORDER {
-        let (ra, dec, _, _, _) = eph.body_calc(name);
-        let name_s: &'static str = match name {
-            "sun" => "sun", "moon" => "moon", "mercury" => "mercury",
-            "venus" => "venus", "mars" => "mars", "jupiter" => "jupiter",
-            "saturn" => "saturn", "uranus" => "uranus", "neptune" => "neptune",
-            _ => "?",
-        };
-        bodies.push((name_s, ra, dec));
-    }
-    let lst = ((eph.sidtime % 24.0 + 24.0) % 24.0) * 15.0;
-    (lst, bodies)
+    let s = astro::sky_at(year, month, day, hour, lat, lon, tz);
+    let bodies = BODY_ORDER.iter()
+        .map(|&name| { let p = astro::pos(&s, name); (name, p.ra, p.dec) })
+        .collect();
+    (astro::sidereal(&s), bodies)
 }
 
 /// Is a body above the horizon at the given local hour?
@@ -1004,8 +544,6 @@ pub fn hex_to_256(hex: &str) -> u8 {
 }
 
 pub fn visible_planets(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: f64) -> Vec<VisiblePlanet> {
-    let eph = Ephemeris::new(year, month, day, lat, lon, tz);
-
     // Variation selector 15 (U+FE0E) forces emoji-presentation
     // terminals to render the astronomical/astrological symbols as
     // text-style monochrome glyphs rather than 2-cell colour icons.
@@ -1025,19 +563,17 @@ pub fn visible_planets(year: i32, month: u32, day: u32, lat: f64, lon: f64, tz: 
 
     for &(name, symbol, color) in planet_info {
         let is_visible = check_hours.iter().any(|&h| {
-            let (alt, _) = eph.body_alt_az(name, h);
-            alt > 5.0
+            astro::where_is(&astro::sky_at(year, month, day, h, lat, lon, tz), name).alt > 5.0
         });
         if is_visible {
-            let (ra, dec, _, _, _) = eph.body_calc(name);
-            let (rise, _, set) = eph.rts(ra, dec, rise_altitude(name));
+            let t = astro::body_times(year, month, day, name, lat, lon, tz);
             visible.push(VisiblePlanet {
                 name: match name {
                     "mercury" => "Mercury", "venus" => "Venus", "mars" => "Mars",
                     "jupiter" => "Jupiter", "saturn" => "Saturn", _ => name,
                 },
                 symbol, color,
-                rise: truncate_hms(&rise), set: truncate_hms(&set),
+                rise: clock(&t.rise), set: clock(&t.set),
             });
         }
     }
@@ -1145,26 +681,6 @@ fn is_leap(year: i32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
-fn prev_day(year: i32, month: u32, day: u32) -> (i32, u32, u32) {
-    if day > 1 { (year, month, day - 1) }
-    else if month > 1 { let pm = month - 1; (year, pm, days_in_month(year, pm)) }
-    else { (year - 1, 12, 31) }
-}
-
-fn format_hhmm(hours: f64) -> String {
-    let mut h = hours % 24.0;
-    if h < 0.0 { h += 24.0; }
-    let hh = h.floor() as u32;
-    let mm = ((h - hh as f64) * 60.0).round() as u32;
-    if mm >= 60 { format!("{:02}:{:02}", (hh + 1) % 24, 0) }
-    else { format!("{:02}:{:02}", hh, mm) }
-}
-
-/// Truncate "HH:MM:SS" to "HH:MM"
-fn truncate_hms(s: &str) -> String {
-    if s.len() >= 5 { s[..5].to_string() } else { s.to_string() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1213,14 +729,33 @@ mod tests {
         assert!(p.phase_index < 8);
     }
 
+    /// The moon moves 13° a day, so its rise and set must come from where
+    /// it is at that hour. Taken from the 0h place they were up to 82
+    /// minutes off. PyEphem gives 13:55 and 21:53 for Oslo this day.
     #[test]
-    fn test_ephemeris_body_calc_no_panic() {
-        let eph = Ephemeris::new(2026, 4, 7, 59.9139, 10.7522, 1.0);
-        for name in &["mercury", "venus", "mars", "jupiter", "saturn"] {
-            let (ra, dec, _, _, _) = eph.body_calc(name);
-            assert!(ra >= 0.0 && ra < 360.0, "{} RA out of range: {}", name, ra);
-            assert!(dec >= -90.0 && dec <= 90.0, "{} Dec out of range: {}", name, dec);
-        }
+    fn the_moon_rises_and_sets_on_time() {
+        let (rise, set) = moon_times(2026, 11, 16, 59.9139, 10.7522, 1.0).unwrap();
+        assert_eq!((rise.as_str(), set.as_str()), ("13:55", "21:53"));
+        let moon = all_bodies(2026, 11, 16, 59.9139, 10.7522, 1.0).into_iter().find(|b| b.name == "moon").unwrap();
+        assert_eq!((moon.rise.as_str(), moon.set.as_str()), ("13:55", "21:53"));
+    }
+
+    /// The parallax of a planet depends on its distance from the earth.
+    /// It was taken from the distance to the sun, which moved Mars by up
+    /// to 20 seconds of arc. PyEphem, Oslo, 2026-11-16 0h UT.
+    #[test]
+    fn a_planet_is_seen_from_the_earth() {
+        let saturn = all_bodies(2026, 11, 16, 59.9139, 10.7522, 1.0).into_iter().find(|b| b.name == "saturn").unwrap();
+        assert!((saturn.ra_deg - 8.8257).abs() < 0.001 && (saturn.dec_deg - 0.9333).abs() < 0.001);
+    }
+
+    /// A day with no rise shows "--:--" and counts as up from midnight.
+    #[test]
+    fn a_missing_time_reads_as_dashes() {
+        let moon = all_bodies(2026, 3, 20, 78.2232, 15.6267, 1.0).into_iter().find(|b| b.name == "moon").unwrap();
+        assert_eq!(moon.set, "--:--");
+        assert_eq!(moon.set_h, Some(24.0));
+        assert!(is_above(moon.rise_h, moon.set_h, false, false, 23.5));
     }
 
     // ── Robustness regressions ────────────────────────────────────

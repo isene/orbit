@@ -1,9 +1,9 @@
 [package]
 name = "fe2o3-orbit"
-version = "0.1.6"
+version = "0.2.0"
 edition = "2021"
 authors = ["Geir Isene <g@isene.com>"]
-description = "Moon phases, ephemeris, sun/planet positions. Shared by Fe₂O₃ apps (nova, tock). Ported from ruby-ephemeris."
+description = "An almanac: sun, moon, planets, stars and eclipses. Where, when, how bright. Shared by the Fe₂O₃ apps (astro, tock, moon)."
 license = "Unlicense"
 repository = "https://github.com/isene/orbit"
 keywords = ["astronomy", "ephemeris", "moon", "planets", "fe2o3"]
